@@ -1,7 +1,6 @@
 #pragma once
 // ════════════════════════════════════════════════════════════
-//  MenuSystem.hpp  —  GUI Menu chính + Chọn nhân vật
-//  Dùng data từ CharacterClass.hpp (không hardcode)
+//  MenuSystem.hpp  —  Menu chính + Chọn nhân vật + Độ khó
 // ════════════════════════════════════════════════════════════
 #include <SFML/Graphics.hpp>
 #include <array>
@@ -10,25 +9,21 @@
 #include <vector>
 
 #include "CharacterClass.hpp"
-
-// ── Thông tin nhân vật — lấy từ CharacterClass::DEFS ────────
-// (không dùng struct CharInfo riêng nữa)
-
-// ── Màn hình hiện tại ─────────────────────────────────────────
+#include "ScoreSystem.hpp"  // Difficulty enum
+#include "dokho.hpp"
 enum class MenuScreen { MainMenu, CharSelect, FadeOut };
 
 class MenuSystem {
  public:
-  // Kết quả trả về khi player chọn xong
   struct Result {
-    int charIndex = 0;  // 0=Warrior, 1=Mage, 2=Rogue
+    int charIndex = 0;
+    Difficulty difficulty = Difficulty::Easy;
     bool quit = false;
   };
 
   MenuSystem(sf::RenderWindow& window, sf::Font& font)
       : window_(window), font_(font) {}
 
-  // ── Khởi tạo ─────────────────────────────────────────────
   void init() {
     winW_ = static_cast<float>(window_.getSize().x);
     winH_ = static_cast<float>(window_.getSize().y);
@@ -38,15 +33,14 @@ class MenuSystem {
     done_ = false;
     hovered_ = -1;
     selectedChar_ = 0;
+    selectedDiff_ = Difficulty::Easy;
     animTime_ = 0.f;
-    // chars_ lấy thẳng từ CharacterClass::DEFS — không cần init thêm
   }
 
   bool isActive() const { return active_; }
   bool isDone() const { return done_; }
   Result getResult() const { return result_; }
 
-  // ── Xử lý sự kiện ────────────────────────────────────────
   void handleEvent(const sf::Event& event) {
     if (!active_ || done_) return;
 
@@ -54,32 +48,24 @@ class MenuSystem {
       mousePos_ = {(float)mm->position.x, (float)mm->position.y};
       updateHover();
     }
-
     if (const auto* mb = event.getIf<sf::Event::MouseButtonPressed>()) {
       if (mb->button == sf::Mouse::Button::Left) {
         mousePos_ = {(float)mb->position.x, (float)mb->position.y};
         handleClick();
       }
     }
-
     if (const auto* kb = event.getIf<sf::Event::KeyPressed>()) {
-      if (kb->code == sf::Keyboard::Key::Escape) {
-        if (screen_ == MenuScreen::CharSelect) screen_ = MenuScreen::MainMenu;
-      }
+      if (kb->code == sf::Keyboard::Key::Escape &&
+          screen_ == MenuScreen::CharSelect)
+        screen_ = MenuScreen::MainMenu;
     }
   }
 
-  // ── Update (animation) ────────────────────────────────────
   void update(float dt) {
     if (!active_) return;
     animTime_ += dt;
-
-    // Fade in khi mới vào
-    if (fadeAlpha_ > 0.f && screen_ != MenuScreen::FadeOut) {
+    if (fadeAlpha_ > 0.f && screen_ != MenuScreen::FadeOut)
       fadeAlpha_ = std::max(0.f, fadeAlpha_ - dt * 400.f);
-    }
-
-    // Fade out trước khi bắt đầu game
     if (screen_ == MenuScreen::FadeOut) {
       fadeAlpha_ = std::min(255.f, fadeAlpha_ + dt * 300.f);
       if (fadeAlpha_ >= 255.f) {
@@ -89,25 +75,16 @@ class MenuSystem {
     }
   }
 
-  // ── Render ────────────────────────────────────────────────
   void render() {
     if (!active_) return;
-
-    // Nền tối toàn màn
     sf::RectangleShape bg({winW_, winH_});
     bg.setFillColor(sf::Color(15, 12, 20));
     window_.draw(bg);
-
-    // Hạt bụi trang trí (particles giả)
     drawParticles();
-
     if (screen_ == MenuScreen::MainMenu)
       drawMainMenu();
-    else if (screen_ == MenuScreen::CharSelect ||
-             screen_ == MenuScreen::FadeOut)
+    else
       drawCharSelect();
-
-    // Fade overlay
     if (fadeAlpha_ > 0.f) {
       sf::RectangleShape fade({winW_, winH_});
       fade.setFillColor(sf::Color(0, 0, 0, static_cast<uint8_t>(fadeAlpha_)));
@@ -116,37 +93,29 @@ class MenuSystem {
   }
 
  private:
-  // ════════════════════════════════════════════════════════
-  //  MAIN MENU
-  // ════════════════════════════════════════════════════════
+  // ── Main Menu ─────────────────────────────────────────────
   void drawMainMenu() {
-    const float cx = winW_ * 0.5f;
+    float cx = winW_ * 0.5f;
+    float titY = winH_ * 0.22f;
+    float bob = std::sin(animTime_ * 1.8f) * 5.f;
 
-    // ── Tiêu đề game ────────────────────────────────────
-    float titleY = winH_ * 0.22f;
-    float titleBob = std::sin(animTime_ * 1.8f) * 5.f;
-
-    // Glow sau tiêu đề
     sf::CircleShape glow(180.f);
     glow.setFillColor(sf::Color(80, 40, 120, 40));
     glow.setOrigin({180.f, 180.f});
-    glow.setPosition({cx, titleY + titleBob});
+    glow.setPosition({cx, titY + bob});
     window_.draw(glow);
 
-    drawText("VAMPIRE", 54, {cx, titleY - 32.f + titleBob},
-             sf::Color(220, 80, 80), true);
-    drawText("SURVIVORS", 36, {cx, titleY + 30.f + titleBob},
-             sf::Color(180, 140, 200), true);
-    drawText("Clone", 16, {cx, titleY + 68.f + titleBob},
-             sf::Color(120, 100, 140), true);
+    drawText("VAMPIRE", 54, {cx, titY - 32.f + bob}, sf::Color(220, 80, 80),
+             true);
+    drawText("SURVIVORS", 36, {cx, titY + 30.f + bob}, sf::Color(180, 140, 200),
+             true);
+    drawText("Clone", 16, {cx, titY + 68.f + bob}, sf::Color(120, 100, 140),
+             true);
 
-    // ── Panel nút ────────────────────────────────────────
-    float panelW = 280.f, panelH = 220.f;
-    float panelX = cx - panelW * 0.5f;
-    float panelY = winH_ * 0.46f;
-    drawPanel(panelX, panelY, panelW, panelH);
+    float panW = 280.f, panH = 220.f;
+    float panX = cx - panW * 0.5f, panY = winH_ * 0.46f;
+    drawPanel(panX, panY, panW, panH);
 
-    // ── Các nút ──────────────────────────────────────────
     struct Btn {
       std::string label;
       int id;
@@ -160,130 +129,154 @@ class MenuSystem {
 
     mainMenuRects_.clear();
     float btnW = 200.f, btnH = 44.f;
-    float btnX = cx - btnW * 0.5f;
-    float startY = panelY + 28.f;
-
-    for (int i = 0; i < (int)btns.size(); i++) {
+    float btnX = cx - btnW * 0.5f, startY = panY + 28.f;
+    for (int i = 0; i < (int)btns.size(); ++i) {
       float by = startY + i * (btnH + 14.f);
-      bool hov = (hovered_ == i);
-      drawButton(btnX, by, btnW, btnH, btns[i].label, btns[i].col, hov);
+      drawButton(btnX, by, btnW, btnH, btns[i].label, btns[i].col,
+                 hovered_ == i);
       mainMenuRects_.push_back({btnX, by, btnW, btnH});
     }
-
-    // ── Footer ───────────────────────────────────────────
     drawText("Press ESC to quit", 11, {cx, winH_ - 22.f}, sf::Color(80, 70, 90),
              true);
   }
 
+  // ── Char Select ───────────────────────────────────────────
   void drawCharSelect() {
-    const float cx = winW_ * 0.5f;
-    const int N = 3;  // CharacterClass::DEFS count
-
-    drawText("CHON NHAN VAT", 28, {cx, winH_ * 0.1f}, sf::Color(220, 180, 100),
+    float cx = winW_ * 0.5f;
+    drawText("CHON NHAN VAT", 28, {cx, winH_ * 0.08f}, sf::Color(220, 180, 100),
              true);
-    drawText("Chon mot nhan vat de bat dau hanh trinh", 13,
-             {cx, winH_ * 0.1f + 36.f}, sf::Color(140, 120, 150), true);
+    drawText("Chon nhan vat va do kho", 13, {cx, winH_ * 0.08f + 34.f},
+             sf::Color(140, 120, 150), true);
 
-    const float cardW = 190.f, cardH = 290.f, gap = 24.f;
-    const float totalW = N * cardW + (N - 1) * gap;
+    // ── Character cards ──────────────────────────────────
+    const int N = 3;
+    const float cardW = 180.f, cardH = 270.f, gap = 20.f;
+    float totalW = N * cardW + (N - 1) * gap;
     float startX = cx - totalW * 0.5f;
-    float cardY = winH_ * 0.5f - cardH * 0.5f + 10.f;
+    float cardY = winH_ * 0.18f;
 
     charCardRects_.clear();
-    for (int i = 0; i < N; i++) {
-      float cx_card = startX + i * (cardW + gap);
-      bool hov = (hovered_ == 100 + i);
-      bool sel = (selectedChar_ == i);
-      drawCharCard(cx_card, cardY, cardW, cardH, CharacterClass::DEFS[i], hov,
-                   sel);
-      charCardRects_.push_back({cx_card, cardY, cardW, cardH});
+    for (int i = 0; i < N; ++i) {
+      float xcx = startX + i * (cardW + gap);
+      bool hov = (hovered_ == 100 + i), sel = (selectedChar_ == i);
+      drawCharCard(xcx, cardY, cardW, cardH, CharacterClass::DEFS[i], hov, sel);
+      charCardRects_.push_back({xcx, cardY, cardW, cardH});
     }
 
-    float btnW = 200.f, btnH = 48.f;
-    float btnX = cx - btnW * 0.5f;
-    float btnY = cardY + cardH + 28.f;
-    drawButton(btnX, btnY, btnW, btnH, "BAT DAU", sf::Color(220, 120, 60),
-               (hovered_ == 200), true);
-    startBtnRect_ = {btnX, btnY, btnW, btnH};
+    // ── Difficulty toggle ─────────────────────────────────
+    float diffY = cardY + cardH + 22.f;
+    drawText("DO KHO:", 14, {cx - 120.f, diffY + 8.f}, sf::Color(180, 180, 180),
+             false);
 
-    drawText("< Quay lai  (ESC)", 12, {cx, btnY + btnH + 20.f},
+    float btnW = 100.f, btnH = 36.f, bGap = 12.f;
+    float diffBtnX = cx - btnW - bGap * 0.5f;
+
+    // Easy
+    bool easyHov = (hovered_ == 300);
+    bool easySel = (selectedDiff_ == Difficulty::Easy);
+    drawDiffButton(diffBtnX, diffY, btnW, btnH, "EASY", sf::Color(80, 220, 80),
+                   easyHov, easySel);
+    diffEasyRect_ = {diffBtnX, diffY, btnW, btnH};
+
+    // Hard
+    float hardBtnX = cx + bGap * 0.5f;
+    bool hardHov = (hovered_ == 301);
+    bool hardSel = (selectedDiff_ == Difficulty::Hard);
+    drawDiffButton(hardBtnX, diffY, btnW, btnH, "HARD", sf::Color(220, 80, 80),
+                   hardHov, hardSel);
+    diffHardRect_ = {hardBtnX, diffY, btnW, btnH};
+
+    // Mô tả độ khó
+    const DifficultyConfig& cfg = DifficultyConfig::get(selectedDiff_);
+    drawText(cfg.description, 11, {cx, diffY + btnH + 16.f},
+             sf::Color(140, 140, 160), true);
+
+    // ── Start button ──────────────────────────────────────
+    float startBtnW = 200.f, startBtnH = 48.f;
+    float startBtnX = cx - startBtnW * 0.5f;
+    float startBtnY = diffY + btnH + 42.f;
+    drawButton(startBtnX, startBtnY, startBtnW, startBtnH, "BAT DAU",
+               sf::Color(220, 120, 60), hovered_ == 200, true);
+    startBtnRect_ = {startBtnX, startBtnY, startBtnW, startBtnH};
+
+    drawText("< Quay lai  (ESC)", 12, {cx, startBtnY + startBtnH + 18.f},
              sf::Color(100, 90, 110), true);
+  }
+
+  void drawDiffButton(float x, float y, float w, float h,
+                      const std::string& label, sf::Color col, bool hovered,
+                      bool selected) {
+    sf::Color bg = selected ? sf::Color(col.r / 2, col.g / 2, col.b / 2, 240)
+                            : sf::Color(30, 25, 40, 220);
+    sf::RectangleShape btn({w, h});
+    btn.setFillColor(bg);
+    btn.setOutlineColor(selected || hovered ? col : sf::Color(70, 60, 85));
+    btn.setOutlineThickness(selected ? 2.5f : 1.f);
+    btn.setPosition({x, y});
+    window_.draw(btn);
+
+    if (selected) {
+      sf::RectangleShape bar({w, 4.f});
+      bar.setFillColor(col);
+      bar.setPosition({x, y});
+      window_.draw(bar);
+    }
+
+    drawText(label, 14, {x + w / 2.f, y + h / 2.f - 8.f},
+             selected ? sf::Color::White : sf::Color(180, 180, 180), true);
   }
 
   void drawCharCard(float x, float y, float w, float h, const CharClassDef& ch,
                     bool hovered, bool selected) {
-    float lift = 0.f;
-    if (selected) lift = 8.f;
+    float lift = selected ? 8.f : 0.f;
     if (hovered) lift = std::min(lift + 5.f, 12.f);
     float bob = selected ? std::sin(animTime_ * 2.5f) * 3.f : 0.f;
     y -= (lift + bob);
 
-    sf::Color panelCol =
-        selected ? sf::Color(45, 35, 60) : sf::Color(28, 22, 38);
-    drawPanel(x, y, w, h, panelCol);
+    drawPanel(x, y, w, h,
+              selected ? sf::Color(45, 35, 60) : sf::Color(28, 22, 38));
 
     if (selected || hovered) {
-      sf::Color borderCol = selected ? ch.color : sf::Color(100, 90, 120);
       sf::RectangleShape border({w, h});
       border.setFillColor(sf::Color::Transparent);
-      border.setOutlineColor(borderCol);
+      border.setOutlineColor(selected ? ch.color : sf::Color(100, 90, 120));
       border.setOutlineThickness(selected ? 2.5f : 1.f);
       border.setPosition({x, y});
       window_.draw(border);
     }
 
-    float cxCard = x + w * 0.5f;
-
-    // Icon vòng tròn
-    float iconY = y + 42.f;
-    sf::CircleShape iconBg(36.f);
+    float cxc = x + w * 0.5f, iconY = y + 38.f;
+    sf::CircleShape iconBg(32.f);
     iconBg.setFillColor(
         sf::Color(ch.color.r / 5, ch.color.g / 5, ch.color.b / 5, 200));
     iconBg.setOutlineColor(sf::Color(ch.color.r, ch.color.g, ch.color.b, 180));
     iconBg.setOutlineThickness(2.f);
-    iconBg.setOrigin({36.f, 36.f});
-    iconBg.setPosition({cxCard, iconY});
+    iconBg.setOrigin({32.f, 32.f});
+    iconBg.setPosition({cxc, iconY});
     window_.draw(iconBg);
-    drawText(ch.icon, 34, {cxCard, iconY - 17.f}, ch.color, true);
+    drawText(ch.icon, 30, {cxc, iconY - 15.f}, ch.color, true);
 
-    // Tên
-    drawText(ch.name, 18, {cxCard, iconY + 50.f}, sf::Color(230, 220, 240),
-             true);
-
-    // Vũ khí khởi đầu — highlight
-    sf::RectangleShape wpnBg({w - 20.f, 24.f});
-    wpnBg.setFillColor(
-        sf::Color(ch.color.r / 6, ch.color.g / 6, ch.color.b / 6, 180));
-    wpnBg.setPosition({x + 10.f, iconY + 74.f});
-    window_.draw(wpnBg);
-    drawText(ch.weaponName, 11, {cxCard, iconY + 82.f}, ch.color, true);
-
-    // Mô tả
-    drawTextWrapped(ch.description, 11, x + 12.f, iconY + 108.f, w - 24.f,
+    drawText(ch.name, 18, {cxc, iconY + 44.f}, sf::Color(230, 220, 240), true);
+    drawText(ch.weaponName, 11, {cxc, iconY + 68.f}, ch.color, true);
+    drawTextWrapped(ch.description, 11, x + 10.f, iconY + 90.f, w - 20.f,
                     sf::Color(160, 150, 170));
 
-    // Stats
-    float statY = y + h - 58.f;
-    sf::RectangleShape statBg({w - 20.f, 50.f});
-    statBg.setFillColor(sf::Color(20, 15, 30, 200));
-    statBg.setPosition({x + 10.f, statY});
-    window_.draw(statBg);
-    drawTextWrapped(ch.statLine, 10, x + 14.f, statY + 6.f, w - 28.f,
+    float statY = y + h - 54.f;
+    sf::RectangleShape sb({w - 16.f, 46.f});
+    sb.setFillColor(sf::Color(20, 15, 30, 200));
+    sb.setPosition({x + 8.f, statY});
+    window_.draw(sb);
+    drawTextWrapped(ch.statLine, 10, x + 12.f, statY + 5.f, w - 24.f,
                     sf::Color(180, 200, 160));
   }
 
-  // ════════════════════════════════════════════════════════
-  //  HELPERS
-  // ════════════════════════════════════════════════════════
+  // ── Helpers ───────────────────────────────────────────────
   void drawPanel(float x, float y, float w, float h,
                  sf::Color col = sf::Color(28, 22, 38)) {
-    // Shadow
     sf::RectangleShape shadow({w + 8.f, h + 8.f});
     shadow.setFillColor(sf::Color(0, 0, 0, 80));
     shadow.setPosition({x + 4.f, y + 6.f});
     window_.draw(shadow);
-
-    // Panel
     sf::RectangleShape panel({w, h});
     panel.setFillColor(col);
     panel.setOutlineColor(sf::Color(70, 55, 90, 180));
@@ -293,49 +286,41 @@ class MenuSystem {
   }
 
   void drawButton(float x, float y, float w, float h, const std::string& label,
-                  sf::Color accentCol, bool hovered, bool big = false) {
-    // Glow khi hover
+                  sf::Color acc, bool hovered, bool big = false) {
     if (hovered) {
       sf::RectangleShape glow({w + 12.f, h + 12.f});
-      glow.setFillColor(sf::Color(accentCol.r, accentCol.g, accentCol.b, 40));
+      glow.setFillColor(sf::Color(acc.r, acc.g, acc.b, 40));
       glow.setPosition({x - 6.f, y - 6.f});
       window_.draw(glow);
     }
-
-    // Background
-    sf::Color bgCol = hovered ? sf::Color(accentCol.r / 2, accentCol.g / 2,
-                                          accentCol.b / 2, 220)
-                              : sf::Color(35, 28, 48, 220);
+    sf::Color bg = hovered ? sf::Color(acc.r / 2, acc.g / 2, acc.b / 2, 220)
+                           : sf::Color(35, 28, 48, 220);
     sf::RectangleShape btn({w, h});
-    btn.setFillColor(bgCol);
-    btn.setOutlineColor(hovered ? accentCol : sf::Color(70, 60, 85));
+    btn.setFillColor(bg);
+    btn.setOutlineColor(hovered ? acc : sf::Color(70, 60, 85));
     btn.setOutlineThickness(hovered ? 1.5f : 1.f);
     btn.setPosition({x, y});
     window_.draw(btn);
-
-    // Label
-    sf::Color txtCol = hovered ? sf::Color::White : sf::Color(200, 190, 210);
-    unsigned sz = big ? 18u : 15u;
-    drawText(label, sz, {x + w * 0.5f, y + h * 0.5f - (big ? 10.f : 8.f)},
-             txtCol, true);
+    drawText(label, big ? 18u : 15u,
+             {x + w * 0.5f, y + h * 0.5f - (big ? 10.f : 8.f)},
+             hovered ? sf::Color::White : sf::Color(200, 190, 210), true);
   }
 
-  void drawText(const std::string& str, unsigned size, sf::Vector2f pos,
+  void drawText(const std::string& s, unsigned sz, sf::Vector2f pos,
                 sf::Color col, bool centered = false) {
-    sf::Text txt(font_, str, size);
-    txt.setFillColor(col);
+    sf::Text t(font_, s, sz);
+    t.setFillColor(col);
     if (centered) {
-      auto b = txt.getLocalBounds();
-      txt.setOrigin(
+      auto b = t.getLocalBounds();
+      t.setOrigin(
           {b.position.x + b.size.x * 0.5f, b.position.y + b.size.y * 0.5f});
     }
-    txt.setPosition(pos);
-    window_.draw(txt);
+    t.setPosition(pos);
+    window_.draw(t);
   }
 
-  void drawTextWrapped(const std::string& str, unsigned size, float x, float y,
+  void drawTextWrapped(const std::string& str, unsigned sz, float x, float y,
                        float maxW, sf::Color col) {
-    // Tách từng từ, xuống dòng nếu vượt maxW
     std::vector<std::string> words;
     std::string cur;
     for (char c : str) {
@@ -351,45 +336,42 @@ class MenuSystem {
     if (!cur.empty()) words.push_back(cur);
 
     std::string line;
-    float lineH = size * 1.4f;
+    float lineH = sz * 1.4f;
     int row = 0;
     for (auto& w : words) {
       if (w == "\n") {
-        drawText(line, size, {x, y + row * lineH}, col);
+        drawText(line, sz, {x, y + row * lineH}, col);
         line.clear();
-        row++;
+        ++row;
         continue;
       }
       std::string test = line.empty() ? w : line + " " + w;
-      sf::Text tmp(font_, test, size);
+      sf::Text tmp(font_, test, sz);
       if (tmp.getLocalBounds().size.x > maxW && !line.empty()) {
-        drawText(line, size, {x, y + row * lineH}, col);
+        drawText(line, sz, {x, y + row * lineH}, col);
         line = w;
-        row++;
+        ++row;
       } else
         line = test;
     }
-    if (!line.empty()) drawText(line, size, {x, y + row * lineH}, col);
+    if (!line.empty()) drawText(line, sz, {x, y + row * lineH}, col);
   }
 
-  // Hạt bụi lấp lánh nền
   void drawParticles() {
-    constexpr int N = 40;
-    for (int i = 0; i < N; i++) {
-      float phase = (float)i / N;
+    for (int i = 0; i < 40; ++i) {
+      float phase = (float)i / 40.f;
       float t = std::fmod(animTime_ * 0.3f + phase, 1.f);
       float px = winW_ * (0.1f + phase * 0.82f);
       float py = winH_ * (1.f - t);
-      float alpha = std::sin(t * 3.14159f) * 120.f;
+      float a = std::sin(t * 3.14159f) * 120.f;
       float r = 1.5f + std::sin(phase * 7.3f + animTime_) * 1.f;
       sf::CircleShape p(r);
-      p.setFillColor(sf::Color(180, 140, 220, static_cast<uint8_t>(alpha)));
+      p.setFillColor(sf::Color(180, 140, 220, static_cast<uint8_t>(a)));
       p.setPosition({px, py});
       window_.draw(p);
     }
   }
 
-  // ── Click / Hover ────────────────────────────────────────
   bool inRect(float mx, float my, float rx, float ry, float rw, float rh) {
     return mx >= rx && mx <= rx + rw && my >= ry && my <= ry + rh;
   }
@@ -397,17 +379,16 @@ class MenuSystem {
   void updateHover() {
     hovered_ = -1;
     float mx = mousePos_.x, my = mousePos_.y;
-
     if (screen_ == MenuScreen::MainMenu) {
-      for (int i = 0; i < (int)mainMenuRects_.size(); i++) {
+      for (int i = 0; i < (int)mainMenuRects_.size(); ++i) {
         auto& r = mainMenuRects_[i];
         if (inRect(mx, my, r[0], r[1], r[2], r[3])) {
           hovered_ = i;
           break;
         }
       }
-    } else if (screen_ == MenuScreen::CharSelect) {
-      for (int i = 0; i < (int)charCardRects_.size(); i++) {
+    } else {
+      for (int i = 0; i < (int)charCardRects_.size(); ++i) {
         auto& r = charCardRects_[i];
         if (inRect(mx, my, r[0], r[1], r[2], r[3])) {
           hovered_ = 100 + i;
@@ -416,65 +397,73 @@ class MenuSystem {
       }
       auto& sb = startBtnRect_;
       if (inRect(mx, my, sb[0], sb[1], sb[2], sb[3])) hovered_ = 200;
+      if (inRect(mx, my, diffEasyRect_[0], diffEasyRect_[1], diffEasyRect_[2],
+                 diffEasyRect_[3]))
+        hovered_ = 300;
+      if (inRect(mx, my, diffHardRect_[0], diffHardRect_[1], diffHardRect_[2],
+                 diffHardRect_[3]))
+        hovered_ = 301;
     }
   }
 
   void handleClick() {
     float mx = mousePos_.x, my = mousePos_.y;
-
     if (screen_ == MenuScreen::MainMenu) {
-      for (int i = 0; i < (int)mainMenuRects_.size(); i++) {
+      for (int i = 0; i < (int)mainMenuRects_.size(); ++i) {
         auto& r = mainMenuRects_[i];
         if (!inRect(mx, my, r[0], r[1], r[2], r[3])) continue;
-        if (i == 0) {  // PLAY
+        if (i == 0) {
           screen_ = MenuScreen::CharSelect;
           hovered_ = -1;
-        } else if (i == 1) {  // SETTINGS (stub)
-          // TODO: settings screen
-        } else if (i == 2) {  // QUIT
+        } else if (i == 2) {
           result_.quit = true;
           window_.close();
         }
         break;
       }
-    } else if (screen_ == MenuScreen::CharSelect) {
-      // Chọn card nhân vật
-      for (int i = 0; i < (int)charCardRects_.size(); i++) {
+    } else {
+      // Card chọn nhân vật
+      for (int i = 0; i < (int)charCardRects_.size(); ++i) {
         auto& r = charCardRects_[i];
         if (inRect(mx, my, r[0], r[1], r[2], r[3])) {
           selectedChar_ = i;
           break;
         }
       }
-      // Nút START
+      // Difficulty
+      if (inRect(mx, my, diffEasyRect_[0], diffEasyRect_[1], diffEasyRect_[2],
+                 diffEasyRect_[3]))
+        selectedDiff_ = Difficulty::Easy;
+      if (inRect(mx, my, diffHardRect_[0], diffHardRect_[1], diffHardRect_[2],
+                 diffHardRect_[3]))
+        selectedDiff_ = Difficulty::Hard;
+      // Start
       auto& sb = startBtnRect_;
       if (inRect(mx, my, sb[0], sb[1], sb[2], sb[3])) {
         result_.charIndex = selectedChar_;
-        screen_ = MenuScreen::FadeOut;  // trigger fade out → game start
+        result_.difficulty = selectedDiff_;
+        screen_ = MenuScreen::FadeOut;
       }
     }
   }
 
-  // ── Members ──────────────────────────────────────────────
+  // ── Members ───────────────────────────────────────────────
   sf::RenderWindow& window_;
   sf::Font& font_;
 
   float winW_ = 0.f, winH_ = 0.f;
-  float animTime_ = 0.f;
-  float fadeAlpha_ = 255.f;
-  bool active_ = false;
-  bool done_ = false;
-  int hovered_ = -1;
-  int selectedChar_ = 0;
+  float animTime_ = 0.f, fadeAlpha_ = 255.f;
+  bool active_ = false, done_ = false;
+  int hovered_ = -1, selectedChar_ = 0;
+  Difficulty selectedDiff_ = Difficulty::Easy;
 
   MenuScreen screen_ = MenuScreen::MainMenu;
   Result result_;
-
-  std::vector<CharInfo> chars_;
   sf::Vector2f mousePos_;
 
-  // Hit rects: [x, y, w, h]
   std::vector<std::array<float, 4>> mainMenuRects_;
   std::vector<std::array<float, 4>> charCardRects_;
   std::array<float, 4> startBtnRect_ = {};
+  std::array<float, 4> diffEasyRect_ = {};
+  std::array<float, 4> diffHardRect_ = {};
 };

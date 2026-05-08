@@ -60,6 +60,13 @@ for %%f in ("%PROJECT_DIR%*.png") do (
     copy /y "%%f" "%PROJECT_DIR%build\" >nul
 )
 
+:: Copy toàn bộ thư mục audio vào build (bao gồm cả file .ogg và .wav)
+if exist "%PROJECT_DIR%audio" (
+    echo Đang copy thu muc audio...
+    xcopy /e /i /y "%PROJECT_DIR%audio" "%PROJECT_DIR%build\audio" >nul
+) else (
+    echo [CANH BAO] Khong tim thay thu muc audio goc!
+)
 echo.
 echo [OK] Build thanh cong!
 echo.

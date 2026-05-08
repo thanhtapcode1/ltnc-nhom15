@@ -48,10 +48,10 @@ inline const CharClassDef DEFS[3] = {
     // ── 0: Rogue ─────────────────────────────────────────
     {
         "Rogue",
-        "🗡",
-        "⚔  Phong Dao",
+        "",
+        "  Phong Dao",
         "Sat thu nhanh nhen.\nPhong dao xuyen qua ke thu,\nvut vao bong toi.",
-        "❤ HP  8   ⚡ DMG 1   👟 SPD +30",
+        " HP  8    DMG 1    SPD +30",
         sf::Color(220, 180, 60),  // vàng đồng
         StartingSkill::Knife,
         /*bonusHp=*/-2,
@@ -62,10 +62,10 @@ inline const CharClassDef DEFS[3] = {
     // ── 1: Mage ──────────────────────────────────────────
     {
         "Mage",
-        "⚡",
-        "🌩  Set Sam",
+        "",
+        "  Set Sam",
         "Phap su thieu dot.\nTia set danh bai ke dich\ntrong mot no phap.",
-        "❤ HP 10   ⚡ DMG 2   👟 SPD  0",
+        " HP 10    DMG 2    SPD  0",
         sf::Color(100, 160, 255),  // xanh điện
         StartingSkill::Lightning,
         /*bonusHp=*/0,
@@ -76,10 +76,10 @@ inline const CharClassDef DEFS[3] = {
     // ── 2: Druid ─────────────────────────────────────────
     {
         "Druid",
-        "🌿",
-        "🧄  Vong Toi",
+        "",
+        "  Vong Toi",
         "Phap su tu nhien.\nMui toi quet sach quan thu\nxung quanh nguoi.",
-        "❤ HP 15   ⚡ DMG 1   👟 SPD -20",
+        " HP 15    DMG 1    SPD -20",
         sf::Color(100, 220, 100),  // xanh lá
         StartingSkill::Garlic,
         /*bonusHp=*/5,

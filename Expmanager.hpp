@@ -6,7 +6,7 @@
 
 class ExpManager {
  public:
-  static int expRequired(int level) { return level * 10; }
+  static int expRequired(int level) { return level + 5; }
   ExpManager() { ExpOrb::loadTexture(); }
 
   void spawnOrb(sf::Vector2f pos, int value = 1);

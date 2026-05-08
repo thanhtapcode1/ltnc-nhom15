@@ -10,6 +10,8 @@ struct TilesetInfo {
   int firstGid = 0;
   int tileCount = 0;
   int columns = 0;
+  int tileW = 32;  // kích thước tile trong PNG (đọc từ .tsx)
+  int tileH = 32;
   sf::Texture texture;
 };
 
@@ -22,11 +24,14 @@ struct MapLayer {
 
 class TileMap {
  public:
-  void addTileset(const std::string& filename, int firstGid);
+  // filename: tên file PNG (hoặc .tsx — sẽ tự đổi sang .png)
+  // tileW/tileH: kích thước 1 tile trong PNG (lấy từ <tileset tilewidth=
+  // tileheight=>)
+  void addTileset(const std::string& filename, int firstGid, int tileW = 32,
+                  int tileH = 32);
   void addLayer(const std::string& name, const uint32_t* data, int size);
   bool loadTilesets();
 
-  // Render layer [startLayer, endLayer) với frustum culling
   void renderLayers(sf::RenderTarget& target, const sf::View& view,
                     int startLayer, int endLayer) const;
 

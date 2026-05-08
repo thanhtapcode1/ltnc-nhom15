@@ -2,18 +2,20 @@
 // ════════════════════════════════════════════════════════════
 //  MonsterManager.hpp  —  Quản lý toàn bộ quái vật
 //
-//  Thiết kế: Factory pattern
-//    - registerFactory(id, fn) — đăng ký loại quái mới
-//    - spawn(id, pos)          — tạo quái theo id
-//    - spawnRandom(cam)        — spawn quái ngẫu nhiên trong pool
+//  Cơ chế spawn (giống Vampire Survivors):
+//    - Mỗi frame spawn theo quota của wave hiện tại
+//    - Nếu alive < minCount của wave → spawn đến khi đủ quota
+//    - Nếu alive >= minCount → spawn 1 con mỗi loại trong wave
+//    - Nếu alive >= MAX_MONSTERS (300) → chỉ boss/map event mới spawn được
+//    - Boss KHÔNG despawn khi player chạy xa, chỉ bị teleport lại màn hình
 //
 //  CÁCH THÊM QUÁI MỚI (chỉ 2 bước):
 //    1. #include "MyNewMonster.hpp"
 //    2. monsters_.registerFactory("mynew",
 //           [](sf::Vector2f p){ return std::make_unique<MyNewMonster>(p); });
-//
-//  KHÔNG cần sửa MonsterManager hay bất kỳ class nào khác.
 // ════════════════════════════════════════════════════════════
+
+#include <SFML/Graphics.hpp>
 #include <algorithm>
 #include <cstdlib>
 #include <functional>
@@ -24,92 +26,75 @@
 
 #include "IMonster.hpp"
 
-// Forward declare Camera để tránh include nặng
-// (thay bằng #include "Camera.hpp" nếu cần)
 class Camera;
 
-// KillInfo: thông tin quái vừa chết (dùng để spawn exp orb)
 struct KillInfo {
   sf::Vector2f pos;
   int expValue;
   std::string typeId;
+  bool isBoss = false;
 };
 
-// Factory function: nhận vị trí, trả về unique_ptr<IMonster>
 using MonsterFactory = std::function<std::unique_ptr<IMonster>(sf::Vector2f)>;
+
+struct WaveEntry {
+  std::string id;
+  int minCount;         // số tối thiểu phải có trong màn
+  float spawnInterval;  // giây giữa mỗi lần manager check spawn loại này
+  bool isBoss = false;
+};
 
 class MonsterManager {
  public:
-  static constexpr size_t MAX_MONSTERS = 100;
-  static constexpr float SPAWN_MARGIN = 80.f;
-  static constexpr float SPAWN_INTERVAL_MIN = 0.6f;
+  static constexpr int MAX_MONSTERS = 300;
+  static constexpr float DESPAWN_DISTANCE = 1200.f;
+  static constexpr float BOSS_TELEPORT_DISTANCE = 900.f;
 
-  // ── Đăng ký factory ─────────────────────────────────────
-  // Ví dụ:
-  //   mm.registerFactory("flyeye",
-  //       [](sf::Vector2f p){ return std::make_unique<FlyEye>(p); });
+  // ── Factory ─────────────────────────────────────────────
   void registerFactory(const std::string& id, MonsterFactory fn) {
     factories_[id] = std::move(fn);
-    spawnPool_.push_back(id);  // thêm vào pool spawn ngẫu nhiên
   }
 
-  // Điều chỉnh tỉ lệ xuất hiện (weight) — mặc định = 1
-  void setSpawnWeight(const std::string& id, int weight) {
-    spawnWeights_[id] = weight;
-    rebuildWeightedPool();
+  // ── Wave config: WaveManager gọi mỗi khi chuyển wave ───
+  void setWave(const std::vector<WaveEntry>& entries) {
+    waveEntries_ = entries;
+    spawnTimers_.clear();
+    for (auto& e : waveEntries_) spawnTimers_[e.id] = 0.f;
   }
 
-  // Giới hạn số lượng tối đa cho từng loại quái (0 = không giới hạn)
-  // Ví dụ: mm.setSpawnLimit("flyeye", 10);
-  void setSpawnLimit(const std::string& id, int maxCount) {
-    maxPerType_[id] = maxCount;
-  }
-
-  // Đếm số quái còn sống theo loại
-  int countAliveOfType(const std::string& id) const {
-    int n = 0;
-    for (auto& m : monsters_)
-      if (!m->isDead() && m->getTypeId() == id) ++n;
-    return n;
-  }
-
-  // ── Spawn ────────────────────────────────────────────────
-  void spawnInitial(const Camera& cam, int count = 3);
-
-  // Spawn quái cụ thể theo id
-  bool spawn(const std::string& id, sf::Vector2f pos) {
+  // ── Spawn tức thì (map event / boss) ────────────────────
+  // isBoss = true → bỏ qua giới hạn MAX_MONSTERS
+  bool spawnDirect(const std::string& id, sf::Vector2f pos,
+                   bool isBoss = false) {
+    if (!isBoss && aliveCount() >= MAX_MONSTERS) return false;
     auto it = factories_.find(id);
     if (it == factories_.end()) return false;
-
-    // Kiểm tra giới hạn theo loại
-    auto limitIt = maxPerType_.find(id);
-    if (limitIt != maxPerType_.end() && limitIt->second > 0) {
-      if (countAliveOfType(id) >= limitIt->second) return false;
-    }
-
-    monsters_.push_back(it->second(pos));
+    auto m = it->second(pos);
+    if (isBoss) m->setIsBoss(true);
+    monsters_.push_back(std::move(m));
     return true;
   }
 
-  // ── Update: trả về danh sách quái vừa chết ──────────────
+  // ── Spawn lúc đầu game ───────────────────────────────────
+  void spawnInitial(const Camera& cam, int count = 3);
+
+  // ── Update chính (implement trong MonsterManager.cpp) ────
   std::vector<KillInfo> update(float dt, sf::Vector2f playerPos,
                                const Camera& cam);
 
-  // ── Draw ─────────────────────────────────────────────────
+  // ── Vẽ ───────────────────────────────────────────────────
   void draw(sf::RenderTarget& target) const;
   void drawDebug(sf::RenderTarget& target) const;
 
-  // ── BulletManager dùng để kiểm tra va chạm ──────────────
+  // ── Query ────────────────────────────────────────────────
   std::vector<IMonster*> getLiveMonsters();
 
-  // ── Player damage: tổng damage từ quái trong frame ──────
   int collectPendingDamage() {
     int total = 0;
     for (auto& m : monsters_) total += m->getAndResetPendingDamage();
     return total;
   }
 
-  // ── Stats ────────────────────────────────────────────────
   int aliveCount() const {
     int n = 0;
     for (auto& m : monsters_)
@@ -117,32 +102,28 @@ class MonsterManager {
     return n;
   }
 
- private:
-  void applySeparation();  // xu li quai chồng lên nhau
-  void spawnOne(const Camera& cam);
-  void updateSpawner(float dt, const Camera& cam);
-  sf::Vector2f randomSpawnPos(const Camera& cam) const;
+  int countAliveOfType(const std::string& id) const {
+    int n = 0;
+    for (auto& m : monsters_)
+      if (!m->isDead() && m->getTypeId() == id) ++n;
+    return n;
+  }
 
-  void rebuildWeightedPool() {
-    weightedPool_.clear();
-    for (auto& id : spawnPool_) {
-      int w = 1;
-      auto wit = spawnWeights_.find(id);
-      if (wit != spawnWeights_.end()) w = wit->second;
-      for (int i = 0; i < w; ++i) weightedPool_.push_back(id);
-    }
+  bool atCap() const { return aliveCount() >= MAX_MONSTERS; }
+
+ private:
+  void applySeparation();
+  void spawnOne(const std::string& id, sf::Vector2f playerPos,
+                const Camera& cam, bool isBoss);
+  sf::Vector2f randomSpawnPos(sf::Vector2f playerPos, const Camera& cam) const;
+
+  static float length(sf::Vector2f v) {
+    return std::sqrt(v.x * v.x + v.y * v.y);
   }
 
   std::unordered_map<std::string, MonsterFactory> factories_;
-  std::unordered_map<std::string, int> spawnWeights_;
-  std::unordered_map<std::string, int> maxPerType_;  // giới hạn theo loại
-  std::vector<std::string> spawnPool_;
-  std::vector<std::string> weightedPool_;
-
+  std::vector<WaveEntry> waveEntries_;
+  std::unordered_map<std::string, float> spawnTimers_;
   std::vector<std::unique_ptr<IMonster>> monsters_;
-
-  float spawnTimer_ = 0.f;
-  float spawnInterval_ = 3.0f;
   float gameTime_ = 0.f;
-  int spawnCount_ = 1;
 };

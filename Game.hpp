@@ -5,23 +5,22 @@
 
 #include "BulletManager.hpp"
 #include "Camera.hpp"
-#include "CharacterClass.hpp"  // ★ thêm mới
+#include "CharacterClass.hpp"
 #include "CollisionMap.hpp"
 #include "ExpManager.hpp"
 #include "MenuSystem.hpp"
 #include "MonsterManager.hpp"
 #include "Player.hpp"
 #include "PlayerStats.hpp"
+#include "SaveSystem.hpp"
+#include "ScoreSystem.hpp"
 #include "SkillManager.hpp"
+#include "SoundManager.hpp"  // ← âm thanh
 #include "TileMap.hpp"
+#include "WaveManager.hpp"  // ← thêm mới
+#include "dokho.hpp"
 
-enum class UpgradeType {
-  Damage,
-  AttackSpeed,
-  Knife,
-  LightningRing,
-  Garlic,
-};
+enum class UpgradeType { Damage, AttackSpeed, Knife, LightningRing, Garlic };
 
 struct UpgradeOption {
   UpgradeType type;
@@ -29,6 +28,8 @@ struct UpgradeOption {
   std::string desc;
   sf::Color color = sf::Color::White;
 };
+
+enum class GameState { Menu, Playing, GameOver };
 
 class Game {
  public:
@@ -42,14 +43,17 @@ class Game {
   void render();
   void renderHUD();
   void renderUpgradeScreen();
+  void renderGameOver();
 
   void buildUpgradeOptions();
   void applyUpgrade(UpgradeType t);
   void updateHover(sf::Vector2i mousePixel);
   sf::Vector2f mouseToWorld() const;
 
-  // ★ Áp stat + skill khởi đầu theo class được chọn
   void applyCharacterClass(int charIndex);
+  void applyDifficulty();
+  void endGame();
+  void restartGame();
 
   sf::RenderWindow window_;
   CollisionMap colMap_;
@@ -63,23 +67,34 @@ class Game {
   ExpManager expManager_;
   PlayerStats stats_;
   SkillManager skillMgr_;
+  WaveManager waveMgr_;  // ← thêm mới
 
-  // ★ Tốc độ player (có thể thay đổi theo class)
-  float playerSpeed_ = Player::SPEED;
+  ScoreSystem score_;
+  SaveData saveData_;
+  Difficulty difficulty_ = Difficulty::Easy;
 
+  GameState gameState_ = GameState::Menu;
   bool paused_ = false;
   int hoveredCard_ = -1;
+  int selectedChar_ = 0;
+  float playerSpeed_ = Player::SPEED;
+
   std::array<UpgradeOption, 3> upgradeOptions_;
   float levelUpTimer_ = 0.f;
-  int lastLevel_ = 1;
+
+  // ── HUD message (wave / boss / map event) ───────────────
+  std::string hudMessage_;
+  float hudMessageTimer_ = 0.f;
 
   sf::Font font_;
   bool fontLoaded_ = false;
-
   MenuSystem menu_{window_, font_};
-  bool inMenu_ = true;
-  int selectedChar_ = 0;
 
   static constexpr float MAX_DT = 0.05f;
   bool debugMode_ = false;
+  bool pauseMenuOpen_ = false;
+  bool settingsOpen_ = false;
+
+  void renderPauseMenu();
+  void handlePauseMenuClick(sf::Vector2f mouseUI);
 };

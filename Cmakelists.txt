@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(SRC ${CMAKE_SOURCE_DIR})
 set(SFML_DIR "C:/SFML-3.0.0_mingw64/lib/cmake/SFML")
 
-find_package(SFML 3 REQUIRED COMPONENTS Graphics Window System)
+find_package(SFML 3 REQUIRED COMPONENTS Graphics Window System Audio)
 
 add_executable(tilemap
     ${SRC}/main.cpp
@@ -31,6 +31,7 @@ target_link_libraries(tilemap PRIVATE
     SFML::Graphics
     SFML::Window
     SFML::System
+    SFML::Audio
 )
 
 if(WIN32)

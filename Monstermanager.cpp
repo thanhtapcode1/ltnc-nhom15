@@ -1,24 +1,24 @@
-#include "Monstermanager.hpp"
+#include "MonsterManager.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 
 #include "Camera.hpp"
 #include "Constants.hpp"
-#include "MonsterManager.hpp"
 
 using namespace Constants;
 
-// ── Spawn helpers ─────────────────────────────────────────────
-sf::Vector2f MonsterManager::randomSpawnPos(const Camera& cam) const {
+sf::Vector2f MonsterManager::randomSpawnPos(sf::Vector2f playerPos,
+                                            const Camera& cam) const {
   const sf::View& view = cam.getView();
-  sf::Vector2f center = view.getCenter();
   sf::Vector2f half = view.getSize() / 2.f;
+  constexpr float MARGIN = 80.f;
 
-  float left = center.x - half.x - SPAWN_MARGIN;
-  float right = center.x + half.x + SPAWN_MARGIN;
-  float top = center.y - half.y - SPAWN_MARGIN;
-  float bottom = center.y + half.y + SPAWN_MARGIN;
+  float left = playerPos.x - half.x - MARGIN;
+  float right = playerPos.x + half.x + MARGIN;
+  float top = playerPos.y - half.y - MARGIN;
+  float bottom = playerPos.y + half.y + MARGIN;
 
   float mapW = MAP_WIDTH * TILE_RENDER_W;
   float mapH = MAP_HEIGHT * TILE_RENDER_H;
@@ -50,101 +50,118 @@ sf::Vector2f MonsterManager::randomSpawnPos(const Camera& cam) const {
   return {x, y};
 }
 
-void MonsterManager::spawnOne(const Camera& cam) {
-  // Chọn loại quái ngẫu nhiên từ weightedPool_
-  if (weightedPool_.empty()) return;
-  const std::string& id = weightedPool_[std::rand() % weightedPool_.size()];
-  spawn(id, randomSpawnPos(cam));
-}
-
 void MonsterManager::spawnInitial(const Camera& cam, int count) {
-  for (int i = 0; i < count; ++i) spawnOne(cam);
+  sf::Vector2f center = cam.getView().getCenter();
+  for (int i = 0; i < count; ++i) {
+    if (waveEntries_.empty()) break;
+    spawnOne(waveEntries_[0].id, center, cam, false);
+  }
 }
 
-// ── Update ───────────────────────────────────────────────────
-void MonsterManager::updateSpawner(float dt, const Camera& cam) {
-  gameTime_ += dt;
-  spawnTimer_ += dt;
-  spawnInterval_ = std::max(SPAWN_INTERVAL_MIN, 3.0f - gameTime_ * 0.01f);
-
-  int calc = 1 + static_cast<int>(gameTime_ / 40.f);
-  spawnCount_ = std::min(calc, 5);
-
-  if (spawnTimer_ >= spawnInterval_) {
-    spawnTimer_ = 0.f;
-    if (monsters_.size() < MAX_MONSTERS) {
-      int space = static_cast<int>(MAX_MONSTERS - monsters_.size());
-      int numToSpawn = std::min(spawnCount_, space);
-      for (int i = 0; i < numToSpawn; ++i) spawnOne(cam);
-    }
-  }
+void MonsterManager::spawnOne(const std::string& id, sf::Vector2f playerPos,
+                              const Camera& cam, bool isBoss) {
+  auto it = factories_.find(id);
+  if (it == factories_.end()) return;
+  sf::Vector2f pos = randomSpawnPos(playerPos, cam);
+  auto m = it->second(pos);
+  if (isBoss) m->setIsBoss(true);
+  monsters_.push_back(std::move(m));
 }
 
 std::vector<KillInfo> MonsterManager::update(float dt, sf::Vector2f playerPos,
                                              const Camera& cam) {
-  std::vector<KillInfo> kills;
+  gameTime_ += dt;
 
-  for (auto& m : monsters_) {
-    bool wasAlive = m->isAlive();
-    m->update(dt, playerPos);
-    (void)wasAlive;
+  // ── 1. Quota-based spawning ───────────────────────────────
+  if (aliveCount() < MAX_MONSTERS) {
+    for (auto& entry : waveEntries_) {
+      spawnTimers_[entry.id] += dt;
+      if (spawnTimers_[entry.id] < entry.spawnInterval) continue;
+      spawnTimers_[entry.id] = 0.f;
+
+      int alive = countAliveOfType(entry.id);
+      if (alive < entry.minCount) {
+        int toSpawn = std::min(entry.minCount - alive, 3);
+        for (int i = 0; i < toSpawn && aliveCount() < MAX_MONSTERS; ++i)
+          spawnOne(entry.id, playerPos, cam, entry.isBoss);
+      } else {
+        if (aliveCount() < MAX_MONSTERS)
+          spawnOne(entry.id, playerPos, cam, entry.isBoss);
+      }
+    }
   }
 
-  // Đẩy quái không chồng nhau — dùng applyOffset trực tiếp
+  // ── 2. Despawn (thường) + Boss teleport ──────────────────
+  for (auto& m : monsters_) {
+    if (m->isDead()) continue;
+    sf::Vector2f d = m->getPosition() - playerPos;
+    float dist = std::sqrt(d.x * d.x + d.y * d.y);
+
+    if (m->isBoss()) {
+      if (dist > BOSS_TELEPORT_DISTANCE)
+        m->setPosition(randomSpawnPos(playerPos, cam));
+    } else {
+      if (dist > DESPAWN_DISTANCE)
+        m->despawn();  // ← dùng despawn() thay vì kill()
+    }
+  }
+
+  // ── 3. AI update ─────────────────────────────────────────
+  for (auto& m : monsters_) {
+    if (m->isDead()) continue;
+    m->update(dt, playerPos);
+  }
+
+  // ── 4. Separation ────────────────────────────────────────
   applySeparation();
 
-  // Xóa quái đã dead hoàn toàn
+  // ── 5. Thu thập kills — CHỈ lấy quái bị giết thật ───────
+  std::vector<KillInfo> kills;
+  for (auto& m : monsters_) {
+    if (m->isDead() && m->isKilledByPlayer())  // ← check flag mới
+      kills.push_back(
+          {m->getPosition(), m->getExpValue(), m->getTypeId(), m->isBoss()});
+  }
+
+  // ── 6. Dọn quái chết ─────────────────────────────────────
   monsters_.erase(std::remove_if(monsters_.begin(), monsters_.end(),
                                  [](const std::unique_ptr<IMonster>& m) {
                                    return m->isDead();
                                  }),
                   monsters_.end());
 
-  updateSpawner(dt, cam);
   return kills;
 }
+
 void MonsterManager::applySeparation() {
-  // ── Vampire Survivors–style flocking separation ──────────────────────────
-  // Thay vì đẩy vị trí trực tiếp (gây rung/jitter), ta tích lũy lực vào
-  // separationForce_ của mỗi quái. Lực giảm dần theo khoảng cách (linear
-  // falloff) và được áp qua flushSeparation() ở cuối frame, kết hợp với
-  // velocity damping → quái trượt ra nhẹ nhàng, không giật cục.
+  constexpr float DESIRED_DIST = 80.f;
+  constexpr float FORCE_MAX = 140.f;
 
-  constexpr float DESIRED_DIST = 80.f;  // khoảng cách mong muốn giữa 2 quái
-  constexpr float FORCE_MAX = 140.f;    // lực đẩy tối đa (pixels/s)
-
-  auto& list = monsters_;
-  for (size_t i = 0; i < list.size(); ++i) {
-    if (!list[i]->isAlive()) continue;
-    for (size_t j = i + 1; j < list.size(); ++j) {
-      if (!list[j]->isAlive()) continue;
-
-      sf::Vector2f d = list[i]->getPosition() - list[j]->getPosition();
+  for (size_t i = 0; i < monsters_.size(); ++i) {
+    if (!monsters_[i]->isAlive()) continue;
+    for (size_t j = i + 1; j < monsters_.size(); ++j) {
+      if (!monsters_[j]->isAlive()) continue;
+      sf::Vector2f d =
+          monsters_[i]->getPosition() - monsters_[j]->getPosition();
       float dist2 = d.x * d.x + d.y * d.y;
       if (dist2 >= DESIRED_DIST * DESIRED_DIST || dist2 < 0.0001f) continue;
-
       float dist = std::sqrt(dist2);
-      // Lực tỉ lệ nghịch với khoảng cách: gần nhau → đẩy mạnh hơn
-      float t = 1.f - (dist / DESIRED_DIST);  // [0,1], 1 = chạm nhau
-      float forceMag = FORCE_MAX * t * t;     // quadratic falloff → mượt hơn
+      float t = 1.f - (dist / DESIRED_DIST);
+      float forceMag = FORCE_MAX * t * t;
       sf::Vector2f push = (d / dist) * forceMag;
-
-      list[i]->addSeparationForce(push);
-      list[j]->addSeparationForce(-push);
+      monsters_[i]->addSeparationForce(push);
+      monsters_[j]->addSeparationForce(-push);
     }
   }
 
-  // Áp separation + integrate velocity cho toàn bộ quái
-  // (mỗi quái tự biết maxSpeed của mình qua virtual, nhưng đơn giản ta
-  //  dùng 1 giá trị chung — subclass override nếu cần)
   constexpr float DEFAULT_MAX_SPEED = 90.f;
-  constexpr float DT_FLUSH = 1.f / 60.f;  // dùng fixed timestep nhỏ để ổn định
-  for (auto& m : list) {
+  constexpr float DT_FLUSH = 1.f / 60.f;
+  for (auto& m : monsters_) {
     if (!m->isAlive()) continue;
     m->flushSeparation(DT_FLUSH, DEFAULT_MAX_SPEED);
   }
 }
-// ── Draw ──────────────────────────────────────────────────────
+
 void MonsterManager::draw(sf::RenderTarget& target) const {
   for (auto& m : monsters_)
     if (!m->isDead()) m->draw(target);

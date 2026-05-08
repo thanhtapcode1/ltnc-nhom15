@@ -21,7 +21,7 @@
 #include "IMonster.hpp"
 #include "ISkill.hpp"
 
-struct KillInfo;  // defined in MonsterManager.hpp — include ở .cpp
+struct KillInfo;
 
 class BulletManager {
  public:

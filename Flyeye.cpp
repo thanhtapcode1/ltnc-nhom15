@@ -176,17 +176,48 @@ void FlyEye::update(float dt, sf::Vector2f playerPos) {
 
 void FlyEye::draw(sf::RenderTarget& target) const {
   if (dead_) return;
-  sf::CircleShape shadow(HIT_RADIUS * 0.8f);     // Kích thước bằng 80% hitbox
-  shadow.setFillColor(sf::Color(0, 0, 0, 100));  // Màu đen, độ trong suốt ~40%
-  shadow.setScale({1.5f, 0.5f});  // Làm bẹt hình tròn thành hình elip
-  shadow.setOrigin({HIT_RADIUS * 0.8f, HIT_RADIUS * 0.8f});
 
-  // Vị trí bóng: luôn ở dưới quái vật, không bị ảnh hưởng bởi hiệu ứng hover
-  // (bay lên xuống) Lưu ý: pos_.y của FlyEye đã bao gồm std::sin(hoverT_), nếu
-  // muốn bóng đứng yên trên mặt đất bạn có thể trừ đi phần dao động đó, nhưng
-  // đơn giản nhất là đặt cố định bên dưới pos_
-  shadow.setPosition({pos_.x, pos_.y + 50.f});
+  const bool boss = isBoss();
+  const float bossScale = boss ? 2.2f : 1.0f;  // boss to gấp 2.2x
+  const float finalScale = SCALE * bossScale;
+
+  // ── Shadow ───────────────────────────────────────────────
+  float shadowR = HIT_RADIUS * 0.8f * bossScale;
+  sf::CircleShape shadow(shadowR);
+  shadow.setFillColor(sf::Color(0, 0, 0, boss ? 150 : 100));
+  shadow.setScale({1.5f, 0.5f});
+  shadow.setOrigin({shadowR, shadowR});
+  shadow.setPosition({pos_.x, pos_.y + 50.f * bossScale});
   target.draw(shadow);
+
+  // ── Boss: viền ngoài nhấp nháy màu vàng/đỏ ──────────────
+  if (boss) {
+    // dùng hoverT_ (luôn tăng) để tạo pulse
+    float pulse = std::abs(std::sin(hoverT_ * 2.5f));
+    uint8_t alpha = static_cast<uint8_t>(160 + 95 * pulse);
+    float ringR = HIT_RADIUS * bossScale + 10.f;
+
+    // Viền ngoài cùng: đỏ cam
+    sf::CircleShape ring2(ringR + 6.f);
+    ring2.setFillColor(sf::Color::Transparent);
+    ring2.setOutlineColor(
+        sf::Color(255, 80, 0, static_cast<uint8_t>(alpha * 0.6f)));
+    ring2.setOutlineThickness(4.f);
+    ring2.setOrigin({ringR + 6.f, ringR + 6.f});
+    ring2.setPosition(pos_);
+    target.draw(ring2);
+
+    // Viền trong: vàng sáng
+    sf::CircleShape ring(ringR);
+    ring.setFillColor(sf::Color::Transparent);
+    ring.setOutlineColor(sf::Color(255, 220, 0, alpha));
+    ring.setOutlineThickness(3.f);
+    ring.setOrigin({ringR, ringR});
+    ring.setPosition(pos_);
+    target.draw(ring);
+  }
+
+  // ── Sprite ───────────────────────────────────────────────
   const sf::Texture& tex =
       (state_ == FlyEyeState::TakeHit) ? texFlight_ : currentTex();
   int frameIdx = frame_;
@@ -196,15 +227,35 @@ void FlyEye::draw(sf::RenderTarget& target) const {
   sprite.setTextureRect(sf::IntRect(sf::Vector2i(frameIdx * FRAME_W, 0),
                                     sf::Vector2i(FRAME_W, FRAME_H)));
   sprite.setOrigin({FRAME_W / 2.f, FRAME_H / 2.f});
-  float sx = flipX_ ? -SCALE : SCALE;
-  sprite.setScale({sx, SCALE});
+  float sx = flipX_ ? -finalScale : finalScale;
+  sprite.setScale({sx, finalScale});
   sprite.setPosition(pos_);
 
   if (state_ == FlyEyeState::TakeHit) {
     sprite.setColor(hitFlash_ ? sf::Color(255, 80, 80)
                               : sf::Color(255, 160, 160));
+  } else if (boss) {
+    // Boss tint nhẹ đỏ để phân biệt với quái thường
+    sprite.setColor(sf::Color(255, 180, 180));
   }
   target.draw(sprite);
+
+  // ── Boss HP bar lớn hơn ──────────────────────────────────
+  if (boss) {
+    float ratio = static_cast<float>(getHp()) / static_cast<float>(getMaxHp());
+    const float barW = 80.f, barH = 8.f;
+    sf::RectangleShape bg({barW, barH});
+    bg.setFillColor(sf::Color(60, 0, 0, 200));
+    bg.setOrigin({barW / 2.f, barH / 2.f});
+    float barY = pos_.y - HIT_RADIUS * bossScale - 20.f;
+    bg.setPosition({pos_.x, barY});
+    target.draw(bg);
+    sf::RectangleShape bar({barW * ratio, barH});
+    bar.setFillColor(sf::Color(255, 60, 60, 220));
+    bar.setOrigin({barW / 2.f, barH / 2.f});
+    bar.setPosition({pos_.x, barY});
+    target.draw(bar);
+  }
 }
 
 void FlyEye::drawDebug(sf::RenderTarget& target) const {

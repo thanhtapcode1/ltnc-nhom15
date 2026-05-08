@@ -1,19 +1,31 @@
 #pragma once
 // ════════════════════════════════════════════════════════════
-//  WaveManager.hpp  —  Hệ thống wave quái kiểu Vampire Survivors
+//  WaveManager.hpp  —  Hệ thống wave giống Vampire Survivors
 //
-//  Cách hoạt động:
-//    - Theo dõi gameTime (giây)
-//    - Mỗi mốc thời gian → kích hoạt 1 WaveEvent đặc biệt
-//    - WaveEvent có thể là: horde (đàn lớn), elite (boss nhỏ),
-//      surround (bao vây), cross (chữ thập), ring (vòng tròn)
+//  Cơ chế:
+//    - Mỗi phút chuyển sang 1 wave mới (thay đổi bộ quái + quota)
+//    - Wave định nghĩa danh sách WaveEntry: { id, minCount, spawnInterval }
+//    - MonsterManager tự lo việc duy trì quota theo frame
 //
-//  CÁCH DÙNG trong Game.cpp:
-//    waveMgr_.update(dt, gameTime, playerPos, camera_, monsters_);
-//    std::string msg = waveMgr_.popMessage();  // hiện thông báo HUD
+//  Boss:
+//    - Spawn đặc biệt theo mốc thời gian cụ thể
+//    - Không despawn, bị teleport lại nếu player chạy xa
+//    - Có thể drop Treasure Chest (flag isBoss trong KillInfo)
 //
-//  THÊM WAVE MỚI: chỉ cần push vào waveScript_ trong buildScript()
+//  Map Events (sự kiện bản đồ):
+//    - Spawn nhóm lớn ngoài chu kỳ wave bình thường
+//    - Dùng pattern: Horde / Surround / Ring / Cross / Line / Sweep
+//    - Sweep: đàn quái quét ngang màn hình, chỉ tồn tại ngắn hạn
+//
+//  CÁCH DÙNG:
+//    // Trong Game.cpp constructor:
+//    waveMgr_.init(monsters_);
+//
+//    // Trong Game::update():
+//    waveMgr_.update(dt, player_.getPosition(), camera_, monsters_);
+//    if (auto msg = waveMgr_.popMessage()) hudMsg_ = *msg;
 // ════════════════════════════════════════════════════════════
+
 #include <SFML/Graphics.hpp>
 #include <algorithm>
 #include <cmath>
@@ -25,121 +37,256 @@
 
 #include "MonsterManager.hpp"
 
-// ── Kiểu spawn pattern ────────────────────────────────────────
-enum class SpawnPattern {
-  Horde,     // Nhiều quái từ 1 phía đổ vào
+// ── Spawn pattern cho Map Event ──────────────────────────────
+enum class MapEventPattern {
+  Horde,     // Đám đông từ 1 cạnh màn hình
   Surround,  // Bao vây xung quanh player
+  Ring,      // Vòng tròn đều nhau
   Cross,     // 4 cánh chữ thập
-  Ring,      // Vòng tròn khép kín
-  Line,      // Hàng ngang/dọc đổ vào
+  Line,      // Hàng ngang / dọc
+  Sweep,     // Làn sóng quét ngang màn hình (di chuyển nhanh)
 };
 
-// ── Định nghĩa 1 wave event ───────────────────────────────────
-struct WaveEvent {
-  float triggerTime;          // giây từ đầu game
-  std::string monsterId;      // "flyeye", "skeleton", ...
-  int count;                  // số lượng
-  SpawnPattern pattern;       // thông báo hiện trên HUD ("Horde incoming!")
-  float spawnRadius = 550.f;  // bán kính spawn so với player
+// ── Định nghĩa 1 Map Event ────────────────────────────────────
+struct MapEvent {
+  float triggerTime;  // giây từ đầu game
+  std::string monsterId;
+  int count;
+  MapEventPattern pattern;
+  float radius = 550.f;
+  std::string message;  // hiện trên HUD, "" = không hiện
+};
+
+// ── Định nghĩa 1 Boss Spawn ───────────────────────────────────
+struct BossSpawn {
+  float triggerTime;
+  std::string bossId;
+  sf::Vector2f offset = {0.f, -400.f};  // offset so với player
+  std::string message = "BOSS INCOMING!";
+};
+
+// ── Định nghĩa 1 Wave (1 phút) ────────────────────────────────
+struct WaveDef {
+  float startTime;                 // giây bắt đầu wave
+  std::vector<WaveEntry> entries;  // bộ quái + quota
+  std::string name;                // tên hiện HUD
 };
 
 class WaveManager {
  public:
-  // ── Khởi tạo: đăng ký danh sách monster IDs có trong game ──
-  // Gọi sau khi đã registerFactory trong MonsterManager
-  void init(const std::vector<std::string>& monsterIds) {
-    monsterIds_ = monsterIds;
-    buildScript();
+  // ── Khởi tạo: truyền MonsterManager để set wave đầu tiên ──
+  void init(MonsterManager& mm) {
+    buildWaves();
+    buildBossScript();
+    buildMapEvents();
+    if (!waves_.empty()) mm.setWave(waves_[0].entries);
   }
 
-  // ── Gọi mỗi frame ────────────────────────────────────────────
+  // ── Gọi mỗi frame ─────────────────────────────────────────
   void update(float dt, sf::Vector2f playerPos, const Camera& cam,
               MonsterManager& mm) {
     gameTime_ += dt;
-    while (nextWave_ < waveScript_.size() &&
-           gameTime_ >= waveScript_[nextWave_].triggerTime) {
-      executeWave(waveScript_[nextWave_], playerPos, cam, mm);
+
+    // 1. Chuyển wave theo thời gian
+    while (nextWave_ < waves_.size() &&
+           gameTime_ >= waves_[nextWave_].startTime) {
+      mm.setWave(waves_[nextWave_].entries);
+      pendingMessage_ = "Wave: " + waves_[nextWave_].name;
       nextWave_++;
     }
+
+    // 2. Boss spawns
+    while (nextBoss_ < bossScript_.size() &&
+           gameTime_ >= bossScript_[nextBoss_].triggerTime) {
+      const auto& bs = bossScript_[nextBoss_];
+      sf::Vector2f bossPos = playerPos + bs.offset;
+      mm.spawnDirect(bs.bossId, bossPos, /*isBoss=*/true);
+      pendingMessage_ = bs.message;
+      nextBoss_++;
+    }
+
+    // 3. Map events
+    while (nextEvent_ < mapEvents_.size() &&
+           gameTime_ >= mapEvents_[nextEvent_].triggerTime) {
+      const auto& ev = mapEvents_[nextEvent_];
+      // Map event KHÔNG bị chặn bởi MAX_MONSTERS cap (ngoại trừ boss)
+      auto positions = calcPositions(ev, playerPos, cam);
+      for (auto& pos : positions)
+        mm.spawnDirect(ev.monsterId, pos, /*isBoss=*/false);
+      if (!ev.message.empty()) pendingMessage_ = ev.message;
+      nextEvent_++;
+    }
+  }
+
+  // Lấy message HUD (consume 1 lần)
+  std::optional<std::string> popMessage() {
+    if (pendingMessage_.empty()) return std::nullopt;
+    auto msg = pendingMessage_;
+    pendingMessage_.clear();
+    return msg;
   }
 
   float getGameTime() const { return gameTime_; }
 
-  // Còn bao nhiêu giây đến wave tiếp theo
-  std::optional<float> nextWaveIn() const {
-    if (nextWave_ >= waveScript_.size()) return std::nullopt;
-    float t = waveScript_[nextWave_].triggerTime - gameTime_;
+  // Tên wave hiện tại
+  std::string currentWaveName() const {
+    if (nextWave_ == 0) return "Start";
+    return waves_[nextWave_ - 1].name;
+  }
+
+  // Giây đến boss tiếp theo
+  std::optional<float> nextBossIn() const {
+    if (nextBoss_ >= bossScript_.size()) return std::nullopt;
+    float t = bossScript_[nextBoss_].triggerTime - gameTime_;
     return t > 0.f ? std::optional<float>(t) : std::nullopt;
   }
 
-  // Số wave đã trigger
-  int wavesTriggered() const { return static_cast<int>(nextWave_); }
-
  private:
   // ════════════════════════════════════════════════════════
-  //  WAVE SCRIPT — Chỉnh tại đây để thay đổi timeline
+  //  WAVE SCRIPT — Chỉnh tại đây
+  //  Mỗi wave: { startTime, { {id, minCount, spawnInterval}, ... }, name }
+  //
+  //  minCount  = số tối thiểu phải có trong màn tại mọi thời điểm
+  //  spawnInterval = giây giữa mỗi lần manager check spawn loại này
   // ════════════════════════════════════════════════════════
-  void buildScript() {
-    waveScript_.clear();
+  void buildWaves() {
+    waves_.clear();
 
-    // ── Phút 0: Khởi động nhẹ nhàng ─────────────────────
-    push(5, "flyeye", 6, SpawnPattern::Horde, 900.f);
-    push(20, "flyeye", 8, SpawnPattern::Surround, 1500.f);
-    push(35, "skeleton", 5, SpawnPattern::Line, 900.f);
+    // Phút 0: Khởi động — chỉ flyeye, nhẹ nhàng
+    pushWave(0.f, "Minute 0",
+             {
+                 {"flyeye", 5, 1.5f},
+             });
 
-    // ── Phút 1: Tăng áp lực ──────────────────────────────
-    push(60, "flyeye", 12, SpawnPattern::Ring);
-    push(75, "skeleton", 8, SpawnPattern::Horde);
-    push(90, "flyeye", 10, SpawnPattern::Cross);
+    // Phút 1: Thêm skeleton
+    pushWave(60.f, "Minute 1",
+             {
+                 {"flyeye", 8, 1.2f},
+                 {"skeleton", 4, 2.0f},
+             });
 
-    // ── Phút 2: Mini-boss rush ───────────────────────────
-    push(120, "skeleton", 15, SpawnPattern::Surround);
-    push(135, "flyeye", 15, SpawnPattern::Ring);
-    push(150, "skeleton", 10, SpawnPattern::Cross);
+    // Phút 2: Tăng áp lực
+    pushWave(120.f, "Minute 2",
+             {
+                 {"flyeye", 10, 1.0f},
+                 {"skeleton", 8, 1.5f},
+                 {"slime", 4, 2.5f},
+             });
 
-    // ── Phút 3: Chaos ────────────────────────────────────
-    push(180, "flyeye", 20, SpawnPattern::Horde);
-    push(195, "skeleton", 18, SpawnPattern::Ring);
-    push(210, "flyeye", 15, SpawnPattern::Cross);
-    push(225, "skeleton", 20, SpawnPattern::Surround);
+    // Phút 3: Chaos
+    pushWave(180.f, "Minute 3",
+             {
+                 {"flyeye", 15, 0.8f},
+                 {"skeleton", 12, 1.0f},
+                 {"slime", 8, 1.5f},
+             });
 
-    // ── Phút 4+: Không ngừng nghỉ ───────────────────────
-    push(240, "flyeye", 25, SpawnPattern::Ring);
-    push(270, "skeleton", 25, SpawnPattern::Horde);
-    push(300, "flyeye", 30, SpawnPattern::Surround);
+    // Phút 4: Không ngừng nghỉ
+    pushWave(240.f, "Minute 4",
+             {
+                 {"flyeye", 20, 0.6f},
+                 {"skeleton", 18, 0.8f},
+                 {"slime", 12, 1.0f},
+             });
 
-    // Sắp xếp theo thời gian (đề phòng nhập sai thứ tự)
-    std::sort(waveScript_.begin(), waveScript_.end(),
-              [](const WaveEvent& a, const WaveEvent& b) {
+    // Phút 5+: Đỉnh điểm (gần MAX_MONSTERS)
+    pushWave(300.f, "Minute 5+",
+             {
+                 {"flyeye", 30, 0.5f},
+                 {"skeleton", 25, 0.6f},
+                 {"slime", 20, 0.8f},
+             });
+
+    std::sort(waves_.begin(), waves_.end(),
+              [](const WaveDef& a, const WaveDef& b) {
+                return a.startTime < b.startTime;
+              });
+  }
+
+  // ════════════════════════════════════════════════════════
+  //  BOSS SCRIPT
+  // ════════════════════════════════════════════════════════
+  void buildBossScript() {
+    bossScript_.clear();
+
+    // Boss skeleton mạnh xuất hiện mỗi 2 phút
+    // (dùng id riêng nếu có, hoặc tái dùng "skeleton" với flag boss)
+    bossScript_.push_back(
+        {120.f, "skeleton", {0.f, -450.f}, "BOSS: SKELETON KING!"});
+    bossScript_.push_back({240.f, "flyeye", {0.f, -450.f}, "BOSS: GIANT EYE!"});
+    bossScript_.push_back(
+        {360.f, "skeleton", {0.f, -450.f}, "BOSS: DEATH KNIGHT!"});
+
+    std::sort(bossScript_.begin(), bossScript_.end(),
+              [](const BossSpawn& a, const BossSpawn& b) {
                 return a.triggerTime < b.triggerTime;
               });
   }
 
-  void push(float t, const std::string& id, int count, SpawnPattern pat,
-            float radius = 320.f) {
-    waveScript_.push_back({t, id, count, pat, radius});
+  // ════════════════════════════════════════════════════════
+  //  MAP EVENTS — Sự kiện bản đồ ngoài chu kỳ thường
+  // ════════════════════════════════════════════════════════
+  void buildMapEvents() {
+    mapEvents_.clear();
+
+    // Phút 0
+    pushEvent(5.f, "flyeye", 6, MapEventPattern::Horde, 900.f, "");
+    pushEvent(20.f, "flyeye", 8, MapEventPattern::Surround, 1500.f,
+              "Surrounded!");
+    pushEvent(35.f, "skeleton", 5, MapEventPattern::Line, 900.f, "");
+
+    // Phút 1
+    pushEvent(60.f, "flyeye", 12, MapEventPattern::Ring, 600.f,
+              "Ring of Eyes!");
+    pushEvent(75.f, "skeleton", 8, MapEventPattern::Horde, 700.f, "");
+    pushEvent(90.f, "flyeye", 10, MapEventPattern::Cross, 600.f, "");
+
+    // Phút 2
+    pushEvent(130.f, "skeleton", 15, MapEventPattern::Surround, 700.f,
+              "Encircled!");
+    pushEvent(150.f, "flyeye", 15, MapEventPattern::Ring, 600.f, "");
+
+    // Phút 3
+    pushEvent(180.f, "flyeye", 20, MapEventPattern::Sweep, 800.f,
+              "SWARM INCOMING!");
+    pushEvent(210.f, "skeleton", 18, MapEventPattern::Ring, 700.f,
+              "Death Ring!");
+
+    // Phút 4+
+    pushEvent(240.f, "flyeye", 25, MapEventPattern::Sweep, 900.f,
+              "MEGA SWARM!");
+    pushEvent(270.f, "skeleton", 25, MapEventPattern::Horde, 800.f, "");
+    pushEvent(300.f, "flyeye", 30, MapEventPattern::Surround, 900.f,
+              "TOTAL SIEGE!");
+
+    std::sort(mapEvents_.begin(), mapEvents_.end(),
+              [](const MapEvent& a, const MapEvent& b) {
+                return a.triggerTime < b.triggerTime;
+              });
   }
 
-  // ── Thực thi 1 wave event ────────────────────────────────
-  void executeWave(const WaveEvent& ev, sf::Vector2f playerPos,
-                   const Camera& cam, MonsterManager& mm) {
-    auto positions = calcPositions(ev, playerPos, cam);
-    for (auto& pos : positions) mm.spawn(ev.monsterId, pos);
+  void pushWave(float t, const std::string& name,
+                std::vector<WaveEntry> entries) {
+    waves_.push_back({t, std::move(entries), name});
+  }
+
+  void pushEvent(float t, const std::string& id, int count, MapEventPattern pat,
+                 float radius, const std::string& msg) {
+    mapEvents_.push_back({t, id, count, pat, radius, msg});
   }
 
   // ── Tính vị trí spawn theo pattern ───────────────────────
-  std::vector<sf::Vector2f> calcPositions(const WaveEvent& ev,
+  std::vector<sf::Vector2f> calcPositions(const MapEvent& ev,
                                           sf::Vector2f center,
                                           const Camera& cam) const {
     std::vector<sf::Vector2f> pts;
     pts.reserve(ev.count);
-    const float R = ev.spawnRadius;
+    const float R = ev.radius;
     const int N = ev.count;
     const float PI = 3.14159265f;
 
     switch (ev.pattern) {
-      // ── Horde: đám đông từ 1 cạnh ngẫu nhiên ───────────
-      case SpawnPattern::Horde: {
+      case MapEventPattern::Horde: {
         int side = std::rand() % 4;
         for (int i = 0; i < N; i++) {
           float spread = R * 0.8f;
@@ -148,27 +295,25 @@ class WaveManager {
           switch (side) {
             case 0:
               p = {center.x + t, center.y - R};
-              break;  // trên
+              break;
             case 1:
               p = {center.x + t, center.y + R};
-              break;  // dưới
+              break;
             case 2:
               p = {center.x - R, center.y + t};
-              break;  // trái
+              break;
             default:
               p = {center.x + R, center.y + t};
-              break;  // phải
+              break;
           }
           pts.push_back(jitter(p, 20.f));
         }
         break;
       }
 
-      // ── Surround: bao vây ngẫu nhiên khắp xung quanh ───
-      case SpawnPattern::Surround: {
+      case MapEventPattern::Surround: {
         for (int i = 0; i < N; i++) {
-          float angle =
-              (float(i) / N) * 2.f * PI + randF() * (PI / N);  // jitter góc
+          float angle = (float(i) / N) * 2.f * PI + randF() * (PI / N);
           float r = R * (0.85f + randF() * 0.3f);
           pts.push_back(
               {center.x + std::cos(angle) * r, center.y + std::sin(angle) * r});
@@ -176,8 +321,7 @@ class WaveManager {
         break;
       }
 
-      // ── Ring: vòng tròn đều nhau (đáng sợ hơn Surround) ─
-      case SpawnPattern::Ring: {
+      case MapEventPattern::Ring: {
         for (int i = 0; i < N; i++) {
           float angle = (float(i) / N) * 2.f * PI;
           pts.push_back(
@@ -186,50 +330,47 @@ class WaveManager {
         break;
       }
 
-      // ── Cross: 4 cánh chữ thập ──────────────────────────
-      case SpawnPattern::Cross: {
+      case MapEventPattern::Cross: {
         int perArm = std::max(1, N / 4);
         float spacing = R / perArm;
+        sf::Vector2f dirs[4] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
         for (int arm = 0; arm < 4; arm++) {
-          sf::Vector2f dir;
-          switch (arm) {
-            case 0:
-              dir = {1.f, 0.f};
-              break;  // phải
-            case 1:
-              dir = {-1.f, 0.f};
-              break;  // trái
-            case 2:
-              dir = {0.f, 1.f};
-              break;  // xuống
-            default:
-              dir = {0.f, -1.f};
-              break;  // lên
-          }
           for (int k = 0; k < perArm; k++) {
             float dist = spacing * (k + 1) * 0.8f + R * 0.3f;
-            sf::Vector2f p = {center.x + dir.x * dist + jitterV().x,
-                              center.y + dir.y * dist + jitterV().y};
-            pts.push_back(p);
+            pts.push_back({center.x + dirs[arm].x * dist + jitterV().x,
+                           center.y + dirs[arm].y * dist + jitterV().y});
           }
         }
         break;
       }
 
-      // ── Line: hàng ngang hoặc dọc tràn vào ──────────────
-      case SpawnPattern::Line: {
-        bool horizontal = (std::rand() % 2 == 0);
+      case MapEventPattern::Line: {
+        bool horiz = (std::rand() % 2 == 0);
         float fromSide = (std::rand() % 2 == 0) ? -R : R;
         float spacing = R * 1.6f / N;
         float start = -R * 0.8f;
         for (int i = 0; i < N; i++) {
-          float offset = start + spacing * i;
-          sf::Vector2f p;
-          if (horizontal)
-            p = {center.x + fromSide, center.y + offset};
-          else
-            p = {center.x + offset, center.y + fromSide};
+          float off = start + spacing * i;
+          sf::Vector2f p =
+              horiz ? sf::Vector2f{center.x + fromSide, center.y + off}
+                    : sf::Vector2f{center.x + off, center.y + fromSide};
           pts.push_back(jitter(p, 15.f));
+        }
+        break;
+      }
+
+      // Sweep: hàng dày từ 1 cạnh, quét nhanh qua màn hình
+      // Quái spawn dày sát nhau ở 1 phía, di chuyển sang phía bên kia
+      case MapEventPattern::Sweep: {
+        int side = std::rand() % 2;  // 0 = trái→phải, 1 = trên→dưới
+        float fromSide = -R;
+        float spacing = (R * 2.f) / N;
+        for (int i = 0; i < N; i++) {
+          float off = -R + spacing * i;
+          sf::Vector2f p =
+              (side == 0) ? sf::Vector2f{center.x + fromSide, center.y + off}
+                          : sf::Vector2f{center.x + off, center.y + fromSide};
+          pts.push_back(jitter(p, 10.f));
         }
         break;
       }
@@ -239,16 +380,20 @@ class WaveManager {
 
   // ── Utilities ─────────────────────────────────────────────
   static float randF() { return static_cast<float>(std::rand()) / RAND_MAX; }
-  static sf::Vector2f jitterV(float range = 25.f) {
-    return {(randF() - 0.5f) * range * 2.f, (randF() - 0.5f) * range * 2.f};
+  static sf::Vector2f jitterV(float r = 25.f) {
+    return {(randF() - 0.5f) * r * 2.f, (randF() - 0.5f) * r * 2.f};
   }
-  static sf::Vector2f jitter(sf::Vector2f p, float range) {
-    return p + jitterV(range);
-  }
+  static sf::Vector2f jitter(sf::Vector2f p, float r) { return p + jitterV(r); }
 
   // ── State ─────────────────────────────────────────────────
-  std::vector<WaveEvent> waveScript_;
-  std::vector<std::string> monsterIds_;
+  std::vector<WaveDef> waves_;
+  std::vector<BossSpawn> bossScript_;
+  std::vector<MapEvent> mapEvents_;
+
   size_t nextWave_ = 0;
+  size_t nextBoss_ = 0;
+  size_t nextEvent_ = 0;
+
   float gameTime_ = 0.f;
+  std::string pendingMessage_;
 };

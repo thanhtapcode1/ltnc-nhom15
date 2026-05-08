@@ -17,13 +17,13 @@ bool Skeleton::loadTextures() {
     const char* f;
   } list[] = {
       {texFlight_,
-       "C:\\Users\\LENOVO\\OneDrive\\Desktop\\project - Copy\\hinh "
+       "C:\\Users\\LENOVO\\OneDrive\\Desktop\\project\\hinh "
        "anh\\Walksk.png"},
       {texAttack_,
-       "C:\\Users\\LENOVO\\OneDrive\\Desktop\\project - Copy\\hinh "
+       "C:\\Users\\LENOVO\\OneDrive\\Desktop\\project\\hinh "
        "anh\\Attacksk.png"},
       {texDeath_,
-       "C:\\Users\\LENOVO\\OneDrive\\Desktop\\project - Copy\\hinh "
+       "C:\\Users\\LENOVO\\OneDrive\\Desktop\\project\\hinh "
        "anh\\Deathsk.png"},
 
   };
@@ -175,15 +175,47 @@ void Skeleton::update(float dt, sf::Vector2f playerPos) {
 void Skeleton::draw(sf::RenderTarget& target) const {
   if (dead_) return;
 
-  sf::CircleShape shadow(HIT_RADIUS * 0.8f);
-  shadow.setFillColor(sf::Color(0, 0, 0, 100));
+  const bool boss = isBoss();
+  const float bossScale = boss ? 2.2f : 1.0f;
+  const float finalScale = SCALE * bossScale;
+
+  // ── Shadow ───────────────────────────────────────────────
+  float shadowR = HIT_RADIUS * 0.8f * bossScale;
+  sf::CircleShape shadow(shadowR);
+  shadow.setFillColor(sf::Color(0, 0, 0, boss ? 150 : 100));
   shadow.setScale({1.5f, 0.5f});
-  shadow.setOrigin({HIT_RADIUS * 0.8f, HIT_RADIUS * 0.8f});
-  shadow.setPosition({pos_.x, pos_.y + 50.f});
+  shadow.setOrigin({shadowR, shadowR});
+  shadow.setPosition({pos_.x, pos_.y + 50.f * bossScale});
   target.draw(shadow);
 
+  // ── Boss: viền ngoài nhấp nháy màu tím/đỏ ───────────────
+  if (boss) {
+    float pulse = std::abs(std::sin(timer_ * 4.f));
+    uint8_t alpha = static_cast<uint8_t>(160 + 95 * pulse);
+    float ringR = HIT_RADIUS * bossScale + 10.f;
+
+    // Viền ngoài: đỏ thẫm
+    sf::CircleShape ring2(ringR + 6.f);
+    ring2.setFillColor(sf::Color::Transparent);
+    ring2.setOutlineColor(
+        sf::Color(180, 0, 255, static_cast<uint8_t>(alpha * 0.6f)));
+    ring2.setOutlineThickness(4.f);
+    ring2.setOrigin({ringR + 6.f, ringR + 6.f});
+    ring2.setPosition(pos_);
+    target.draw(ring2);
+
+    // Viền trong: trắng/tím sáng
+    sf::CircleShape ring(ringR);
+    ring.setFillColor(sf::Color::Transparent);
+    ring.setOutlineColor(sf::Color(220, 100, 255, alpha));
+    ring.setOutlineThickness(3.f);
+    ring.setOrigin({ringR, ringR});
+    ring.setPosition(pos_);
+    target.draw(ring);
+  }
+
+  // ── Sprite ───────────────────────────────────────────────
   const sf::Texture& tex = currentTex();
-  // TakeHit dùng texFlight_, giới hạn frameIdx trong FRAMES_FLIGHT
   int frameIdx =
       (state_ == SkeletonState::TakeHit) ? (frame_ % FRAMES_FLIGHT) : frame_;
 
@@ -191,15 +223,34 @@ void Skeleton::draw(sf::RenderTarget& target) const {
   sprite.setTextureRect(sf::IntRect(sf::Vector2i(frameIdx * FRAME_W, 0),
                                     sf::Vector2i(FRAME_W, FRAME_H)));
   sprite.setOrigin({FRAME_W / 2.f, FRAME_H / 2.f});
-  float sx = flipX_ ? -SCALE : SCALE;
-  sprite.setScale({sx, SCALE});
+  float sx = flipX_ ? -finalScale : finalScale;
+  sprite.setScale({sx, finalScale});
   sprite.setPosition(pos_);
 
   if (state_ == SkeletonState::TakeHit) {
     sprite.setColor(hitFlash_ ? sf::Color(255, 80, 80)
                               : sf::Color(255, 160, 160));
+  } else if (boss) {
+    sprite.setColor(sf::Color(220, 180, 255));  // tint tím nhẹ
   }
   target.draw(sprite);
+
+  // ── Boss HP bar lớn hơn ──────────────────────────────────
+  if (boss) {
+    float ratio = static_cast<float>(getHp()) / static_cast<float>(getMaxHp());
+    const float barW = 80.f, barH = 8.f;
+    sf::RectangleShape bg({barW, barH});
+    bg.setFillColor(sf::Color(60, 0, 0, 200));
+    bg.setOrigin({barW / 2.f, barH / 2.f});
+    float barY = pos_.y - HIT_RADIUS * bossScale - 20.f;
+    bg.setPosition({pos_.x, barY});
+    target.draw(bg);
+    sf::RectangleShape bar({barW * ratio, barH});
+    bar.setFillColor(sf::Color(200, 60, 255, 220));
+    bar.setOrigin({barW / 2.f, barH / 2.f});
+    bar.setPosition({pos_.x, barY});
+    target.draw(bar);
+  }
 }
 
 void Skeleton::drawDebug(sf::RenderTarget& target) const {
